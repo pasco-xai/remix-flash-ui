@@ -8,8 +8,39 @@
 import { GoogleGenAI } from '@google/genai';
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
+import { 
+    onAuthStateChanged, 
+    signInWithPopup, 
+    signOut, 
+    User 
+} from 'firebase/auth';
+import { 
+    collection, 
+    addDoc, 
+    query, 
+    where, 
+    orderBy, 
+    limit, 
+    getDocs, 
+    Timestamp,
+    serverTimestamp 
+} from 'firebase/firestore';
 
-import { Artifact, Session, ComponentVariation, LayoutOption } from './types';
+import { 
+    auth, 
+    db, 
+    googleProvider, 
+    handleFirestoreError, 
+    OperationType 
+} from './src/lib/firebase';
+import { 
+    Artifact, 
+    Session, 
+    ComponentVariation, 
+    LayoutOption,
+    SavedArtifact,
+    PromptHistoryItem
+} from './types';
 import { INITIAL_PLACEHOLDERS } from './constants';
 import { generateId } from './utils';
 
@@ -33,7 +64,21 @@ import {
     CheckIcon
 } from './components/Icons';
 
+import { 
+    BookmarkIcon,
+    HistoryIcon,
+    UserIcon,
+    LogOutIcon,
+    PlusIcon
+} from 'lucide-react';
+
 function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [savedArtifacts, setSavedArtifacts] = useState<SavedArtifact[]>([]);
+  const [promptHistory, setPromptHistory] = useState<PromptHistoryItem[]>([]);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionIndex, setCurrentSessionIndex] = useState<number>(-1);
   const [focusedArtifactIndex, setFocusedArtifactIndex] = useState<number | null>(null);
@@ -63,6 +108,113 @@ function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+        setUser(u);
+        if (u) {
+            fetchLibrary(u.uid);
+            fetchPromptHistory(u.uid);
+        } else {
+            setSavedArtifacts([]);
+            setPromptHistory([]);
+        }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const fetchLibrary = async (uid: string) => {
+      try {
+          const q = query(
+              collection(db, 'saved_artifacts'),
+              where('userId', '==', uid),
+              orderBy('timestamp', 'desc')
+          );
+          const querySnapshot = await getDocs(q);
+          const artifacts = querySnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+          })) as SavedArtifact[];
+          setSavedArtifacts(artifacts);
+      } catch (e) {
+          console.error("Error fetching library:", e);
+      }
+  };
+
+  const fetchPromptHistory = async (uid: string) => {
+      try {
+          const q = query(
+              collection(db, 'prompt_history'),
+              where('userId', '==', uid),
+              orderBy('timestamp', 'desc'),
+              limit(10)
+          );
+          const querySnapshot = await getDocs(q);
+          const history = querySnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+          })) as PromptHistoryItem[];
+          setPromptHistory(history);
+      } catch (e) {
+          console.error("Error fetching history:", e);
+      }
+  };
+
+  const handleLogin = async () => {
+    try {
+        await signInWithPopup(auth, googleProvider);
+    } catch (e) {
+        console.error("Login failed:", e);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+        await signOut(auth);
+    } catch (e) {
+        console.error("Logout failed:", e);
+    }
+  };
+
+  const saveToLibrary = async (artifact: Artifact, prompt: string) => {
+      if (!user) {
+          handleLogin();
+          return;
+      }
+      try {
+          const docRef = await addDoc(collection(db, 'saved_artifacts'), {
+              userId: user.uid,
+              prompt: prompt,
+              html: artifact.html,
+              styleName: artifact.styleName,
+              timestamp: serverTimestamp()
+          });
+          setSavedArtifacts(prev => [{
+              id: docRef.id,
+              userId: user.uid,
+              prompt,
+              html: artifact.html,
+              styleName: artifact.styleName,
+              timestamp: new Date().toISOString()
+          }, ...prev]);
+          alert("Saved to library!");
+      } catch (e) {
+          handleFirestoreError(e, OperationType.WRITE, 'saved_artifacts');
+      }
+  };
+
+  const savePromptToHistory = async (prompt: string) => {
+      if (!user) return;
+      try {
+          await addDoc(collection(db, 'prompt_history'), {
+              userId: user.uid,
+              prompt,
+              timestamp: serverTimestamp()
+          });
+          fetchPromptHistory(user.uid);
+      } catch (e) {
+          console.error("Error saving prompt history:", e);
+      }
+  };
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
         if (e.key === '/' && document.activeElement !== inputRef.current) {
@@ -295,8 +447,21 @@ Required JSON Output Format (stream ONE object per line):
       const currentSession = sessions[currentSessionIndex];
       if (currentSession && focusedArtifactIndex !== null) {
           const artifact = currentSession.artifacts[focusedArtifactIndex];
-          setDrawerState({ isOpen: true, mode: 'code', title: 'Source Code', data: artifact.html });
+          setDrawerState({ isOpen: true, mode: 'code', title: 'Code Editor', data: artifact.html });
       }
+  };
+
+  const handleUpdateCode = (newHtml: string) => {
+      if (focusedArtifactIndex === null) return;
+      setSessions(prev => prev.map((sess, i) => 
+          i === currentSessionIndex ? {
+              ...sess,
+              artifacts: sess.artifacts.map((art, j) => 
+                j === focusedArtifactIndex ? { ...art, html: newHtml } : art
+              )
+          } : sess
+      ));
+      setDrawerState(s => ({ ...s, data: newHtml }));
   };
 
   const handleCopyHtml = async () => {
@@ -354,6 +519,9 @@ Required JSON Output Format (stream ONE object per line):
     
     if (!trimmedInput || isLoading) return;
     if (!manualPrompt) setInputValue('');
+
+    // Save to history
+    savePromptToHistory(trimmedInput);
 
     setIsLoading(true);
     const baseTime = Date.now();
@@ -595,6 +763,67 @@ Return ONLY RAW HTML. No markdown fences.
             onClose={() => setIsChatOpen(false)} 
         />
         
+        <button className="library-btn" onClick={() => setIsLibraryOpen(true)}>
+            <BookmarkIcon size={20} />
+            <span>My Library</span>
+        </button>
+
+        {user ? (
+            <div className="user-profile-widget" style={{ position: 'fixed', top: '24px', right: '160px', zIndex: 100, display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{user.displayName}</span>
+                <button className="auth-btn" onClick={handleLogout}><LogOutIcon size={14} /></button>
+            </div>
+        ) : (
+            <button className="library-btn" style={{ left: 'auto', right: '160px' }} onClick={handleLogin}>
+                <UserIcon size={20} />
+                <span>Login</span>
+            </button>
+        )}
+
+        <SideDrawer 
+            isOpen={isLibraryOpen} 
+            onClose={() => setIsLibraryOpen(false)} 
+            title="My Library"
+        >
+            <div className="library-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+                {savedArtifacts.map((art) => (
+                    <div key={art.id} className="sexy-card" onClick={() => {
+                        setSessions([{
+                            id: generateId(),
+                            prompt: art.prompt,
+                            timestamp: Date.now(),
+                            artifacts: [{
+                                id: art.id,
+                                styleName: art.styleName,
+                                html: art.html,
+                                status: 'complete'
+                            }, ...Array(2).fill(null).map((_, i) => ({
+                                id: generateId(),
+                                styleName: 'Placeholder',
+                                html: art.html, // Just for preview
+                                status: 'complete'
+                            }))]
+                        }]);
+                        setCurrentSessionIndex(0);
+                        setIsLibraryOpen(false);
+                    }}>
+                        <div className="sexy-preview" style={{ height: '160px' }}>
+                            <iframe srcDoc={art.html} title={art.prompt} sandbox="allow-scripts allow-same-origin" />
+                        </div>
+                        <div className="sexy-label">
+                            <div style={{ fontWeight: 600 }}>{art.prompt}</div>
+                            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>{art.styleName}</div>
+                        </div>
+                    </div>
+                ))}
+                {savedArtifacts.length === 0 && (
+                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
+                        Nothing saved yet.
+                    </div>
+                )}
+            </div>
+        </SideDrawer>
+
         <HelpModal 
             isOpen={isHelpOpen} 
             onClose={() => setIsHelpOpen(false)} 
@@ -628,7 +857,12 @@ Return ONLY RAW HTML. No markdown fences.
                             <span>Download</span>
                         </button>
                     </div>
-                    <pre className="code-block"><code>{drawerState.data}</code></pre>
+                    <textarea 
+                        className="code-editor"
+                        value={drawerState.data}
+                        onChange={(e) => handleUpdateCode(e.target.value)}
+                        spellCheck={false}
+                    />
                 </div>
             )}
             
@@ -727,16 +961,42 @@ Return ONLY RAW HTML. No markdown fences.
                     <button onClick={handleShowCode}>
                         <CodeIcon /> Source
                     </button>
+                    <button onClick={() => saveToLibrary(currentSession.artifacts[focusedArtifactIndex!], currentSession.prompt)} disabled={isLoading || currentSession.artifacts[focusedArtifactIndex!].status === 'streaming'}>
+                        <BookmarkIcon size={18} /> Save to Library
+                    </button>
                  </div>
             </div>
 
             <div className="floating-input-container">
+                {isHistoryOpen && promptHistory.length > 0 && (
+                    <div className="history-dropdown">
+                        {promptHistory.map((item, i) => (
+                            <div 
+                                key={item.id} 
+                                className="history-item" 
+                                onClick={() => {
+                                    setInputValue(item.prompt);
+                                    setIsHistoryOpen(false);
+                                }}
+                            >
+                                {item.prompt}
+                            </div>
+                        ))}
+                    </div>
+                )}
                 <SlashMenu 
                     query={slashQuery} 
                     isVisible={isSlashMenuVisible} 
                     onSelect={executeCommand} 
                 />
                 <div className={`input-wrapper ${isLoading ? 'loading' : ''}`}>
+                    <button 
+                        className="history-toggle-btn" 
+                        onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+                        style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', marginLeft: '12px', cursor: 'pointer' }}
+                    >
+                        <HistoryIcon size={18} />
+                    </button>
                     {(!inputValue && !isLoading) && (
                         <div className="animated-placeholder" key={placeholderIndex}>
                             <span className="placeholder-text">{placeholders[placeholderIndex]}</span>

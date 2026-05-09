@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "SavedArtifact": {
+      "title": "Saved Artifact",
+      "description": "A UI component saved by the user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "prompt": { "type": "string" },
+        "html": { "type": "string" },
+        "styleName": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "prompt", "html", "timestamp"]
+    },
+    "PromptHistory": {
+      "title": "Prompt History",
+      "description": "A record of prompts entered by the user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "prompt": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "prompt", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/saved_artifacts/{artifactId}": {
+      "schema": "SavedArtifact",
+      "description": "Collection of saved UI artifacts."
+    },
+    "/prompt_history/{promptId}": {
+      "schema": "PromptHistory",
+      "description": "Collection of past prompts for the user."
+    }
+  }
+}

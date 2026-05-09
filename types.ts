@@ -24,3 +24,19 @@ export interface Message {
     role: 'user' | 'model';
     content: string;
 }
+
+export interface SavedArtifact {
+    id: string;
+    userId: string;
+    prompt: string;
+    html: string;
+    styleName: string;
+    timestamp: any;
+}
+
+export interface PromptHistoryItem {
+    id: string;
+    userId: string;
+    prompt: string;
+    timestamp: any;
+}
